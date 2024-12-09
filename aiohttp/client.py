@@ -40,7 +40,7 @@ from yarl import URL
 
 from .deprecation import get_deprecation_detection, is_operation_deprecated, are_parameter_deprecated, get_deprecation_http_header
 import yaml
-import json
+import json as json_lib
 
 from . import hdrs, http, payload
 from ._websocket.reader import WebSocketDataQueue
@@ -830,10 +830,10 @@ class ClientSession:
                         # Because of the spliting of the url it could change the host. If this happens, we stop the search, because most of the time we already left the API territory.
                         try:
                             # Try to get the OAS in JSON format with the current url.
-                            oas_response = self._request(hdrs.METH_GET, oas_url + "/openapi.json")
+                            oas_response = await self._request(hdrs.METH_GET, oas_url + "/openapi.json")
                             if oas_response.status == 200:
                                 try:
-                                    possibleOas = oas_response.json()
+                                    possibleOas = await oas_response.json()
                                     if (possibleOas["openapi"] and possibleOas["info"]):
                                         oas = possibleOas
                                         break
@@ -845,12 +845,13 @@ class ClientSession:
                                     pass
 
                             # Try to get the OAS in YAML format with the current url.
-                            oas_response = self._request(hdrs.METH_GET, oas_url + "/openapi.yaml")
+                            oas_response = await self._request(hdrs.METH_GET, oas_url + "/openapi.yaml")
                             if oas_response.status == 200:
                                 try:
-                                    yaml_data = yaml.safe_load(oas_response.data)
-                                    json_data = json.dumps(yaml_data, indent=4)
-                                    possibleOas = json.loads(json_data)
+                                    resp_data = await oas_response.text()
+                                    yaml_data = yaml.safe_load(resp_data)
+                                    json_data = json_lib.dumps(yaml_data, indent=4)
+                                    possibleOas = json_lib.loads(json_data)
                                     if (possibleOas["openapi"] and possibleOas["info"]):
                                         oas = possibleOas
                                         break
