@@ -819,6 +819,10 @@ class ClientResponse(HeadersMixin):
             self._resolve_charset = session._resolve_charset
         if loop.get_debug():
             self._source_traceback = traceback.extract_stack(sys._getframe(1))
+        # Boolean to indecate that some elements of the request are deprecated.
+        self.deprecated: bool | None = None
+        # A list of deprecated parameter if existent.
+        self.deprecated_parameter: list[str] | None = None
 
     def __reset_writer(self, _: object = None) -> None:
         self.__writer = None

@@ -38,6 +38,10 @@ from typing import (
 from multidict import CIMultiDict, MultiDict, MultiDictProxy, istr
 from yarl import URL
 
+from .deprecation import get_deprecation_detection, is_operation_deprecated, are_parameter_deprecated, get_deprecation_http_header
+import yaml
+import json
+
 from . import hdrs, http, payload
 from ._websocket.reader import WebSocketDataQueue
 from .abc import AbstractCookieJar
@@ -795,6 +799,87 @@ class ClientSession:
                 await trace.send_request_end(
                     method, url.update_query(params), headers, resp
                 )
+
+            # Check if deprecation analysis should be performed.
+            if not str(url.path).endswith(('openapi.yaml', 'openapi.json')) and get_deprecation_detection():
+                # First try to get the information from the HTTP header to avoid a possible second request.
+                HTTP_DEPRECATION_HEADER = ["sunset", "deprecation"]
+                # Add the custom http header from the user to the existing list.
+                lower_custom_deprecation_header = [header.lower() for header in get_deprecation_http_header()]
+                HTTP_DEPRECATION_HEADER.extend(lower_custom_deprecation_header)
+                # Calculate if a HTTP header that indicates deprecation are found in the HTTP header of the response.
+                response_lower_header = [header.lower() for header in resp.headers.keys()]
+                http_deprecation = bool(set(HTTP_DEPRECATION_HEADER).intersection(response_lower_header))
+                # Default value for if the OAS was not found or the path is not valid, we set the deprecation booleans to false to get no false positives.
+                operation_deprecated = False
+                parameter_deprecated = False
+                # Default value for the list of deprecated parameter.
+                deprecated_parameter = []
+
+                # If HTTP was not enough get the OAS if possible.
+                if not http_deprecation:
+                    # Build the initial OAS url.
+                    oas_url = url.scheme + "://" + url.host + ":" + str(url.port) + url.path
+                    # Split the url. Remove everything after the last slash and save it to build the path.
+                    path = oas_url[oas_url.rfind('/'):]
+                    oas_url = oas_url[:oas_url.rfind('/')]
+                    oas_search = True
+
+                    # Search for the OAS. This is a difficult task because there is no rule where to store the file and how to name it. Here we take the file name specified in the OAS 3.0 and shrink the url of the request one step at the time.
+                    while(oas_search):
+                        # Because of the spliting of the url it could change the host. If this happens, we stop the search, because most of the time we already left the API territory.
+                        try:
+                            # Try to get the OAS in JSON format with the current url.
+                            oas_response = self._request(hdrs.METH_GET, oas_url + "/openapi.json")
+                            if oas_response.status == 200:
+                                try:
+                                    possibleOas = oas_response.json()
+                                    if (possibleOas["openapi"] and possibleOas["info"]):
+                                        oas = possibleOas
+                                        break
+                                except TypeError:
+                                    # We called an other endpoint that returned no json.
+                                    pass
+                                except KeyError:
+                                    # The returned json is no OpenAPI-Document.
+                                    pass
+
+                            # Try to get the OAS in YAML format with the current url.
+                            oas_response = self._request(hdrs.METH_GET, oas_url + "/openapi.yaml")
+                            if oas_response.status == 200:
+                                try:
+                                    yaml_data = yaml.safe_load(oas_response.data)
+                                    json_data = json.dumps(yaml_data, indent=4)
+                                    possibleOas = json.loads(json_data)
+                                    if (possibleOas["openapi"] and possibleOas["info"]):
+                                        oas = possibleOas
+                                        break
+                                except TypeError:
+                                    # We called an other endpoint that returned no json.
+                                    pass
+                                except KeyError:
+                                    # The returned json is no OpenAPI-Document.
+                                    pass
+
+                            # Set new url for OAS search or end search if search url is only the url host section.
+                            if oas_url != url.scheme + "://" + url.host + ":" + str(url.port):
+                                path = oas_url[oas_url.rfind('/'):] + path
+                                oas_url = oas_url[:oas_url.rfind('/')]
+                            else:
+                                oas_search = False
+                        except:
+                            oas_search = False
+
+                    # If the OAS was found parse those to find deprecated elements.
+                    if oas_search and path.startswith("/"):
+                        operation_deprecated = is_operation_deprecated(oas, path, method)
+                        if url.query_string != '':
+                            request_parameter = [query_element.split("=")[0] for query_element in url.query_string.split("&")]
+                            parameter_deprecated, deprecated_parameter = are_parameter_deprecated(oas, path, method, request_parameter)         
+
+                # Build a combined boolean out of the differnt parts.
+                resp.deprecated = http_deprecation or operation_deprecated or parameter_deprecated
+                resp.deprecated_parameter = deprecated_parameter
             return resp
 
         except BaseException as e:
